@@ -94,7 +94,7 @@ const {
   <div
     class="markdy-placeholder"
     aria-hidden="true"
-    style={`width:100%;height:100%;background:${bg};display:flex;align-items:center;justify-content:center`}
+    style={`width:100%;height:100%;background:${bg};display:flex;align-items:center;justify-content:center;cursor:pointer`}
   >
     <span
       style="font-family:sans-serif;font-size:12px;color:#bbb;letter-spacing:0.05em"
@@ -121,13 +121,24 @@ const {
   </noscript>
 </div>
 
-<script>
+<!--
+  data-cfasync="false" opts this script out of Cloudflare Rocket Loader.
+  Rocket Loader rewrites <script type="module"> tags injected by Astro's
+  ClientRouter on SPA navigations — it mangles the `type` attribute to a
+  hash-prefixed value (e.g. "abc123-module") to defer execution, but its
+  scheduler does not always re-execute scripts added after the initial
+  page load. The symptom was Markdy scenes stuck on the SSR placeholder
+  ("▶ markdy") after any cross-page navigation that first passed through
+  a page without <Markdy />. Skipping Rocket Loader for this one script
+  restores reliable autoplay regardless of host-page configuration.
+-->
+<script data-cfasync="false">
   // ── Hydration ────────────────────────────────────────────────────────────
   // The renderer is dynamically imported so it is code-split from the
   // host-page bundle.  The browser only downloads it when an element is
   // about to enter the viewport, keeping Time-to-Interactive low.
 
-  async function hydrate(el: HTMLElement): Promise<void> {
+  async function hydrate(el: HTMLElement, forceAutoplay = false): Promise<void> {
     const code = el.dataset.markdyCode;
     if (!code) return;
 
@@ -141,7 +152,7 @@ const {
       // Leave assets empty on parse failure — renderer falls back to DSL paths.
     }
 
-    const autoplay = el.dataset.markdyAutoplay !== "false";
+    const autoplay = forceAutoplay || el.dataset.markdyAutoplay !== "false";
     const loop = el.dataset.markdyLoop !== "false";
     const copyright = el.dataset.markdyCopyright !== "false";
     const progressBar = el.dataset.markdyProgressBar !== "false";
@@ -183,40 +194,71 @@ const {
   }
 
   // ── Intersection observer ────────────────────────────────────────────────
-  // Observe every unhydrated .markdy-root element.  We use threshold: 1.0
-  // so hydration (and autoplay) only triggers once the element's bottom
-  // edge is fully inside the viewport — the animation is never started
-  // while partially cut off.
+  // Observe every unhydrated .markdy-root element. threshold: 0 fires as
+  // soon as a single pixel becomes visible. The previous threshold: 1.0
+  // never fired for scenes taller than the viewport (common on phones in
+  // portrait orientation), leaving them stuck on the placeholder.
+
+  function startHydration(el: HTMLElement, forceAutoplay = false): void {
+    observer.unobserve(el);
+    el.dataset.markdyInit = "hydrating";
+    scheduleHydration(() => {
+      hydrate(el, forceAutoplay).catch(() => {
+        // On failure keep the placeholder visible — do not crash the page.
+        el.dataset.markdyInit = "error";
+        el.removeAttribute("aria-busy");
+      });
+    });
+  }
 
   const observer = new IntersectionObserver(
     (entries) => {
       for (const entry of entries) {
         if (entry.isIntersecting) {
-          const el = entry.target as HTMLElement;
-          observer.unobserve(el);
-          // Mark immediately to prevent double-scheduling on re-runs.
-          el.dataset.markdyInit = "hydrating";
-          scheduleHydration(() => {
-            hydrate(el).catch(() => {
-              // On failure keep the placeholder visible — do not crash the page.
-              el.dataset.markdyInit = "error";
-              el.removeAttribute("aria-busy");
-            });
-          });
+          startHydration(entry.target as HTMLElement);
         }
       }
     },
-    { threshold: 1.0 },
+    { threshold: 0 },
   );
+
+  function isInViewport(el: HTMLElement): boolean {
+    const r = el.getBoundingClientRect();
+    const vh = window.innerHeight || document.documentElement.clientHeight;
+    const vw = window.innerWidth || document.documentElement.clientWidth;
+    return r.bottom > 0 && r.right > 0 && r.top < vh && r.left < vw;
+  }
 
   function initAll(): void {
     document
       .querySelectorAll<HTMLElement>(".markdy-root:not([data-markdy-init])")
       .forEach((el) => {
         el.dataset.markdyInit = "pending";
-        observer.observe(el);
+        // If the element is already on-screen at init time (first scene in
+        // an article, scenes after an in-page anchor jump, etc.) hydrate it
+        // immediately instead of waiting for the observer to fire.
+        if (isInViewport(el)) {
+          startHydration(el);
+        } else {
+          observer.observe(el);
+        }
       });
   }
+
+  // ── Click-to-play fallback ───────────────────────────────────────────────
+  // If hydration was somehow skipped (third-party script blocker, broken
+  // IntersectionObserver, etc.) clicking the placeholder forces autoplay.
+  // Delegated on document so it survives ClientRouter DOM swaps.
+  document.addEventListener("click", (event) => {
+    const target = event.target as HTMLElement | null;
+    const placeholder = target?.closest<HTMLElement>(".markdy-placeholder");
+    if (!placeholder) return;
+    const root = placeholder.closest<HTMLElement>(".markdy-root");
+    if (!root) return;
+    const state = root.dataset.markdyInit;
+    if (state === "done" || state === "hydrating") return;
+    startHydration(root, true);
+  });
 
   // Initial page load.
   if (document.readyState === "loading") {

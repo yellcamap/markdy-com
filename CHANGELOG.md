@@ -5,6 +5,38 @@ All notable changes to the `markdy` project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.1] — 2026-05-16
+
+### Fixed
+- **`<Markdy />` scenes now auto-play reliably on every page navigation, even
+  through Cloudflare Rocket Loader.** When the host site enabled Rocket Loader
+  (the default on many Cloudflare plans), the script Astro emits for the
+  Markdy island had its `type="module"` attribute mangled to a hash-prefixed
+  type (e.g. `abc123-module`) on SPA navigations performed by
+  `<ClientRouter />`. The browser then refused to execute it, and the
+  rocket-loader runtime did not always re-execute scripts added after the
+  initial page load. The visible symptom was every scene stuck on the
+  `▶ markdy` placeholder after navigating from a page without `<Markdy />`
+  to one that uses it (e.g. clicking a locale switcher then a post link).
+  The fix adds `data-cfasync="false"` to the island's `<script>` so Rocket
+  Loader skips it entirely.
+- **First scene in an article hydrates immediately instead of waiting for the
+  IntersectionObserver.** `initAll()` now performs a viewport check on every
+  unhydrated `.markdy-root` element and hydrates the ones already on-screen
+  synchronously. Previously the observer used `{ threshold: 1.0 }`, which
+  never fired for scenes taller than the viewport (common on narrow / mobile
+  screens), leaving them frozen on the placeholder. The observer threshold is
+  lowered to `0` so partial visibility is enough to trigger hydration.
+
+### Added
+- **Click-to-play fallback on the `.markdy-placeholder`.** If hydration is
+  somehow skipped (third-party script blocker, broken `IntersectionObserver`,
+  CSP edge case, etc.) clicking the placeholder forces hydration with
+  `autoplay = true`. The handler is delegated on `document` so it survives
+  Astro view-transition DOM swaps and is added even before `initAll()` runs.
+  The placeholder also picks up `cursor: pointer` so this affordance is
+  visible.
+
 ## [0.6.0] — 2026-04-18
 
 ### Added
